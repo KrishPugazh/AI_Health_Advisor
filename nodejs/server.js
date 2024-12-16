@@ -9,6 +9,16 @@ require('dotenv').config(); // Load environment variables from .env file
 
 const app = express();
 
+const cors = require('cors');
+
+app.use(
+  cors({
+    origin: 'https://frontend-lgg7.onrender.com', // Allow your frontend origin
+    credentials: true, // Allow cookies/session data
+  })
+);
+
+
 // Middleware
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 app.use(bodyParser.json());
