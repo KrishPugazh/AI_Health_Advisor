@@ -9,17 +9,26 @@ require('dotenv').config(); // Load environment variables from .env file
 
 const app = express();
 
+// CORS Configuration
+const allowedOrigins = [
+  'http://localhost:5173', // Local frontend (development)
+  'https://frontend-lgg7.onrender.com', // Deployed frontend
+];
 
 app.use(
   cors({
-    origin: 'https://frontend-lgg7.onrender.com', // Allow your frontend origin
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('CORS policy violation: origin not allowed.'));
+      }
+    },
     credentials: true, // Allow cookies/session data
   })
 );
 
-
 // Middleware
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -28,7 +37,7 @@ const MONGO_URI = process.env.MONGO_API_URL;
 
 if (!MONGO_URI) {
   console.error('Error: MONGO_API_URL is not defined in your environment variables.');
-  process.exit(1); // Exit the application if MongoDB URI is missing
+  process.exit(1);
 }
 
 mongoose
@@ -36,12 +45,12 @@ mongoose
   .then(() => console.log('MongoDB connected to Atlas'))
   .catch((err) => {
     console.error('Error connecting to MongoDB:', err);
-    process.exit(1); // Exit the application on connection error
+    process.exit(1);
   });
 
 // Session Store
 const store = new MongoDBStore({
-  uri: MONGO_URI, // Use the same MongoDB Atlas URI for sessions
+  uri: MONGO_URI,
   collection: 'sessions',
   connectionOptions: {
     useNewUrlParser: true,
@@ -53,13 +62,24 @@ store.on('error', (error) => {
   console.error('Session store error:', error);
 });
 
+// Ensure session secret exists
+if (!process.env.SESSION_SECRET) {
+  console.error('Error: SESSION_SECRET is not defined in your environment variables.');
+  process.exit(1);
+}
+
 // Session Middleware
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || 'default_secret_key', 
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     store: store,
+    cookie: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
+      maxAge: 1000 * 60 * 60 * 24, // 1 day
+    },
   })
 );
 
@@ -77,7 +97,7 @@ const ContactSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true },
   message: { type: String, required: true },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Optional: track which user submitted
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   date: { type: Date, default: Date.now },
 });
 
@@ -96,7 +116,7 @@ app.post('/register', async (req, res) => {
     const newUser = new User({ username, email, password: hashedPassword });
     await newUser.save();
 
-    res.send('User registered successfully!');
+    res.status(201).send('User registered successfully!');
   } catch (err) {
     console.error(err);
     res.status(500).send('Error registering user.');
@@ -114,9 +134,13 @@ app.post('/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).send('Invalid email or password.');
 
-    req.session.userId = user._id;
+    // Regenerate session to prevent session fixation attacks
+    req.session.regenerate((err) => {
+      if (err) return res.status(500).send('Error logging in.');
 
-    res.send('Login successful!');
+      req.session.userId = user._id;
+      res.send('Login successful!');
+    });
   } catch (err) {
     console.error(err);
     res.status(500).send('Error logging in.');
@@ -127,6 +151,7 @@ app.post('/login', async (req, res) => {
 app.post('/logout', (req, res) => {
   req.session.destroy((err) => {
     if (err) return res.status(500).send('Error logging out.');
+    res.clearCookie('connect.sid');
     res.send('Logout successful!');
   });
 });
@@ -144,12 +169,11 @@ app.post('/contact', async (req, res) => {
   const { name, email, message } = req.body;
 
   try {
-    // Save contact form data
     const newContact = new Contact({
       name,
       email,
       message,
-      userId: req.session.userId || null, // Associate with logged-in user if available
+      userId: req.session.userId || null,
     });
     await newContact.save();
 
